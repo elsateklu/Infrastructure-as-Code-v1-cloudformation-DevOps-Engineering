@@ -1,0 +1,282 @@
+Description: >
+  Elsa Teklu / Udacity
+  This CloudFormation script deploys high avilable web application using all needed servers load balancer, webserver, security groups, a listener rule,
+  target group and IAM rules for the access of servers to the S3 bucket.
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+
+  S3CodeRepo:
+    Description: Full S3 path and file name index.html upload file
+    Type: String
+    Default: "s3://my-website-657530498612/index.html"
+
+  InstanceType:
+    Description: The launch configuration for EC2 instance type
+    Type: String
+    Default: "t2.micro"
+
+  BastionHostSSHKeyName:
+    Description: key-pair name.
+    Type: String
+    Default: "jumpbox-key"
+
+  BastionHostToPrivateServerSSHKeyName:
+    Description: Key-pair access private server from Bastion host
+    Type: String
+    Default: "private-server-devops-key"
+
+  NetworkAccessIP:
+    Description: SSH access to the bastion host.
+    Type: String
+    Default: "50.32.108.38/32"
+
+  WebAppServersMinSize:
+    Description: Auto-scaling group minimum number of web application servers
+    Type: String
+    Default: "2"
+
+  WebAppServersMaxSize:
+    Description: Auto-scaling group aximum number of web application servers
+    Type: String
+    Default: "4"
+
+Resources:
+  #jumpbox (bastion host) security group
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bastion Instance SSH Access
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: "22"
+          ToPort: "22"
+          CidrIp: !Sub ${NetworkAccessIP}
+        - IpProtocol: icmp
+          FromPort: "-1"
+          ToPort: "-1"
+          CidrIp: !Sub ${NetworkAccessIP}
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+
+  # Web server security group
+  WebServerSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allows http to our SSH access and hosts
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} WebServerSecGroup
+
+  #load balancer security grooup
+  LBSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allows http to our load balancer
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} LBSecGroup
+
+  #Role to access the bucket
+  UdacityS3ReadOnlyEC2:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+
+  #policy to grant access to the bucket
+  RolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: fullAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: "s3:*"
+            Resource: "*"
+      Roles:
+        - !Ref UdacityS3ReadOnlyEC2
+
+  #instance profile
+  ProfileWithRolesForOurApp:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - Ref: UdacityS3ReadOnlyEC2
+
+  #launch configuration
+  WebAppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo yum update -y
+          sudo yum install unzip awscli -y
+          sudo yum install -y httpd
+          sudo systemctl start httpd
+          sudo systemctl enable httpd
+          sudo chkconfig httpd on
+          cd /var/www/html
+          sudo aws s3 cp ${S3CodeRepo} /var/www/html
+          sudo unzip -o udacity.zip
+          sudo systemctl restart httpd
+      ImageId: ami-0b5eea76982371e91 # Amazon Linux 2 AMI,
+      KeyName: !Sub ${BastionHostToPrivateServerSSHKeyName}
+      IamInstanceProfile: !Ref ProfileWithRolesForOurApp
+      SecurityGroups:
+        - Ref: WebServerSecGroup
+      InstanceType: !Ref "InstanceType"
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: "10"
+
+  #Autoscalling group
+  WebAppGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PRIV-NETS"
+      LaunchConfigurationName:
+        Ref: WebAppLaunchConfig
+      MinSize: !Ref WebAppServersMinSize
+      MaxSize: !Ref WebAppServersMaxSize
+      TargetGroupARNs:
+        - Ref: WebAppTargetGroup
+
+  #load balancer
+  WebAppLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-SN"
+      SecurityGroups:
+        - Ref: LBSecGroup
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: WebAppTargetGroup
+      LoadBalancerArn:
+        Ref: WebAppLB
+      Port: "80"
+      Protocol: HTTP
+
+  ALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref "WebAppTargetGroup"
+      Conditions:
+        - Field: path-pattern
+          Values: [/]
+      ListenerArn: !Ref "Listener"
+      Priority: 1
+
+  #target group for the EC2 instance
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VPCID"
+
+  #jumpbox(bastion host)
+  BastionEC2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - BastionSecurityGroup
+      - ProfileWithRolesForOurApp
+    Properties:
+      IamInstanceProfile: !Ref ProfileWithRolesForOurApp
+      ImageId: ami-0d5eff06f840b45e9 # Amazon Linux 2 AMI
+      InstanceType: !Ref "InstanceType"
+      KeyName: !Sub ${BastionHostSSHKeyName}
+      SecurityGroupIds:
+        - Ref: BastionSecurityGroup
+        - Ref: WebServerSecGroup
+      SubnetId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+  #Elastic IP
+  EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    DependsOn:
+      - BastionEC2Instance
+      - EIP
+    Properties:
+      InstanceId:
+        Ref: BastionEC2Instance
+      AllocationId:
+        Fn::GetAtt:
+          - EIP
+          - AllocationId
+
+Outputs:
+  LoadBalancerDNSName:
+    Description: DNS Name of the web application
+    Value: !Join ["", ["http://", !GetAtt WebAppLB.DNSName]]
+    Export:
+      Name: !Sub "${EnvironmentName}-DNS-NAME"
