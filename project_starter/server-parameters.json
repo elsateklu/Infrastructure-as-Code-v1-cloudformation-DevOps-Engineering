@@ -10,19 +10,7 @@
         "ParameterKey": "InstanceType",
         "ParameterValue": "t2.micro"
     },
-    {
-        "ParameterKey": "BastionHostSSHKeyName",
-        "ParameterValue": "jumpbox-key"
-    },
-    {
-        "ParameterKey": "BastionHostToPrivateServerSSHKeyName",
-        "ParameterValue": "private-server-devops-key"
-    },
 
-    {
-        "ParameterKey": "NetworkAccessIP",
-        "ParameterValue": "50.32.108.38/32"
-    },
     {
         "ParameterKey": "WebAppServersMinSize",
         "ParameterValue": "2"

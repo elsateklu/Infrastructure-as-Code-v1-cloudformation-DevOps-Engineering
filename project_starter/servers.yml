@@ -18,16 +18,6 @@ Parameters:
     Type: String
     Default: "t2.micro"
 
-  BastionHostSSHKeyName:
-    Description: key-pair name.
-    Type: String
-    Default: "jumpbox-key"
-
-  BastionHostToPrivateServerSSHKeyName:
-    Description: Key-pair access private server from Bastion host
-    Type: String
-    Default: "private-server-devops-key"
-
   NetworkAccessIP:
     Description: SSH access to the bastion host.
     Type: String
@@ -76,10 +66,7 @@ Resources:
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: 0.0.0.0/0
+
       SecurityGroupEgress:
         - IpProtocol: tcp
           FromPort: 0
@@ -165,7 +152,6 @@ Resources:
           sudo unzip -o udacity.zip
           sudo systemctl restart httpd
       ImageId: ami-0b5eea76982371e91 # Amazon Linux 2 AMI,
-      KeyName: !Sub ${BastionHostToPrivateServerSSHKeyName}
       IamInstanceProfile: !Ref ProfileWithRolesForOurApp
       SecurityGroups:
         - Ref: WebServerSecGroup
@@ -248,7 +234,6 @@ Resources:
       IamInstanceProfile: !Ref ProfileWithRolesForOurApp
       ImageId: ami-0d5eff06f840b45e9 # Amazon Linux 2 AMI
       InstanceType: !Ref "InstanceType"
-      KeyName: !Sub ${BastionHostSSHKeyName}
       SecurityGroupIds:
         - Ref: BastionSecurityGroup
         - Ref: WebServerSecGroup
